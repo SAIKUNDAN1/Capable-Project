@@ -4,52 +4,70 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 
-# --- Basic Setup ---
-st.set_page_config(page_title="Travel AI")
-st.title("✈️ Simple Travel Assistant")
+# --- 1. Page Configuration ---
+st.set_page_config(page_title="Travel AI", layout="centered")
+st.title("✈️ AI Travel Concierge")
 
-# --- Sidebar for API Key ---
+# --- 2. Sidebar Setup ---
 api_key = st.sidebar.text_input("Gemini API Key", type="password")
 
-if api_key:
-    os.environ["GOOGLE_API_KEY"] = api_key
+# --- 3. Knowledge Base Loader ---
+@st.cache_resource
+def load_data(_key): 
+    os.environ["GOOGLE_API_KEY"] = _key
+    base_path = os.path.dirname(__file__)
+    data_folder = os.path.join(base_path, "data", "raw")
     
-    # Initialize models
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-
-    # --- Load PDF ---
-    @st.cache_resource
-    def load_data():
-        path = "./data/raw"
-        if os.path.exists(path):
-            files = [f for f in os.listdir(path) if f.endswith('.pdf')]
-            if files:
-                loader = PyPDFLoader(os.path.join(path, files[0]))
-                pages = loader.load_and_split()
-                return FAISS.from_documents(pages, embeddings)
-        return None
-
-    vector_db = load_data()
-
-    if vector_db:
-        # --- Simple Chat ---
-        query = st.chat_input("Ask about your trip:")
-        if query:
-            with st.chat_message("user"):
-                st.markdown(query)
+    all_pages = []
+    if os.path.exists(data_folder):
+        files = [f for f in os.listdir(data_folder) if f.lower().endswith('.pdf')]
+        for f in files:
+            file_path = os.path.join(data_folder, f)
+            loader = PyPDFLoader(file_path)
+            all_pages.extend(loader.load_and_split())
             
-            # Find relevant text from PDF
-            docs = vector_db.similarity_search(query, k=3)
-            context = "\n".join([d.page_content for d in docs])
+    if all_pages:
+        # Use the newest 2026 stable model ID
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-2")
+        
+        # --- THE FIX ---
+        # 1. Initialize with just the FIRST document to ensure 1:1 length
+        vector_db = FAISS.from_documents([all_pages[0]], embeddings)
+        
+        # 2. Add the remaining documents one-by-one
+        if len(all_pages) > 1:
+            for page in all_pages[1:]:
+                vector_db.add_documents([page])
+        
+        return vector_db
+    return None
+
+# --- 4. Main App Logic ---
+if api_key:
+    try:
+        vector_db = load_data(api_key)
+
+        if vector_db:
+            query = st.chat_input("Ask a question about your trip:")
+            if query:
+                with st.chat_message("user"):
+                    st.markdown(query)
+                
+                # Search for matching text in PDFs
+                docs = vector_db.similarity_search(query, k=3)
+                context = "\n".join([d.page_content for d in docs])
+                
+                # Generate answer with Gemini
+                llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview")
+                prompt = f"Use this context: {context}\n\nQuestion: {query}"
+                response = llm.invoke(prompt)
+                
+                with st.chat_message("assistant"):
+                    st.markdown(response.content)
+        else:
+            st.error("⚠️ No PDFs found. Make sure they are in data/raw/ on GitHub.")
             
-            # Get response from Gemini
-            prompt = f"Context: {context}\n\nQuestion: {query}"
-            response = llm.invoke(prompt)
-            
-            with st.chat_message("assistant"):
-                st.markdown(response.content)
-    else:
-        st.error("⚠️ No PDF found in 'data/raw/'.")
+    except Exception as e:
+        st.error(f"❌ Error: {str(e)}")
 else:
-    st.info("👋 Enter your API Key in the sidebar to start.")
+    st.info("👋 Please enter your Gemini API Key in the sidebar to begin.")

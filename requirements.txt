@@ -6,4 +6,3 @@ google-generativeai
 pypdf
 faiss-cpu
 streamlit
-python-dotenv

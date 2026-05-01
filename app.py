@@ -1,88 +1,60 @@
 import streamlit as st
 import os
-
-# Updated Imports for Maximum Stability
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter # Stable Path
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.prompts import ChatPromptTemplate
+from langchain.chains import RetrievalQA
 
-# --- Page Config ---
-st.set_page_config(page_title="AI Travel Assistant", page_icon="✈️")
-st.title("✈️ AI Travel Concierge")
+# --- 1. Simple Page Setup ---
+st.set_page_config(page_title="Travel AI", page_icon="✈️")
+st.title("✈️ Simple Travel Concierge")
 
-# --- Configuration & Security ---
-if "GOOGLE_API_KEY" in st.secrets:
-    os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-    api_ready = True
-else:
-    api_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
-    if api_key:
-        os.environ["GOOGLE_API_KEY"] = api_key
-        api_ready = True
-    else:
-        api_ready = False
-        st.info("👋 Please enter your Gemini API Key in the sidebar to begin.")
+# --- 2. Safe API Key Handling ---
+api_key = st.sidebar.text_input("Gemini API Key", type="password")
 
-# --- The Knowledge Base ---
-@st.cache_resource
-def load_knowledge_base():
-    if not api_ready:
+if api_key:
+    os.environ["GOOGLE_API_KEY"] = api_key
+    
+    # Initialize Models simply
+    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+
+    # --- 3. Simple Knowledge Base Loading ---
+    @st.cache_resource
+    def load_data():
+        # Points directly to your file
+        data_folder = "./data/raw"
+        if os.path.exists(data_folder):
+            files = [f for f in os.listdir(data_folder) if f.endswith('.pdf')]
+            if files:
+                # Load just the first PDF for maximum simplicity
+                loader = PyPDFLoader(os.path.join(data_folder, files[0]))
+                pages = loader.load_and_split() # Simple splitting
+                return FAISS.from_documents(pages, embeddings)
         return None
-        
-    data_path = "./data/raw"
-    if os.path.exists(data_path) and any(f.endswith('.pdf') for f in os.listdir(data_path)):
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-        
-        loader = DirectoryLoader(data_path, glob="./*.pdf", loader_cls=PyPDFLoader)
-        docs = loader.load()
-        
-        # Using the updated splitter
-        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-        chunks = splitter.split_documents(docs)
-        
-        return FAISS.from_documents(chunks, embeddings)
-    return None
 
-# --- Main Logic ---
-if api_ready:
-    vector_db = load_knowledge_base()
+    vector_db = load_data()
 
     if vector_db:
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-        if prompt := st.chat_input("How can I help with your trip?"):
-            st.session_state.messages.append({"role": "user", "content": prompt})
+        # --- 4. Simple Chat Interface ---
+        user_query = st.chat_input("Ask about your trip:")
+        
+        if user_query:
             with st.chat_message("user"):
-                st.markdown(prompt)
-
-            llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+                st.markdown(user_query)
             
-            system_prompt = (
-                "You are a helpful travel assistant. Use the context to answer. "
-                "If the answer isn't there, say you don't know. \n\n Context: {context}"
+            # Simple QA Chain (Legacy but extremely stable for basic apps)
+            qa = RetrievalQA.from_chain_type(
+                llm=llm, 
+                chain_type="stuff", 
+                retriever=vector_db.as_retriever()
             )
             
-            qa_prompt = ChatPromptTemplate.from_messages([
-                ("system", system_prompt),
-                ("human", "{input}")
-            ])
-            
-            document_chain = create_stuff_documents_chain(llm, qa_prompt)
-            retrieval_chain = create_retrieval_chain(vector_db.as_retriever(), document_chain)
-            
             with st.chat_message("assistant"):
-                response = retrieval_chain.invoke({"input": prompt})
-                answer = response["answer"]
-                st.markdown(answer)
-                st.session_state.messages.append({"role": "assistant", "content": answer})
+                response = qa.run(user_query)
+                st.markdown(response)
     else:
-        st.error("⚠️ No PDFs found in `data/raw/`.")
+        st.error("Please add a PDF to data/raw/ folder in your GitHub.")
+else:
+    st.info("Enter your API Key in the sidebar to start.")
+        

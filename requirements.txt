@@ -1,8 +1,10 @@
 streamlit
-langchain
+google-generativeai
 langchain-google-genai
 langchain-community
+langchain-core
 duckduckgo-search
+ddgs
 requests
 langgraph
 pypdf

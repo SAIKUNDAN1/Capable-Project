@@ -12,6 +12,9 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
 
+# --- NEW SQL DATABASE CONNECTION INTERFACE ---
+from database import save_search, get_search_history
+
 # --- 1. SYSTEM PAGE CONFIGURATIONS ---
 st.set_page_config(page_title="Free AI Travel Agent", page_icon="✈️", layout="wide")
 
@@ -29,8 +32,9 @@ if "session_id" not in st.session_state:
 if "agent_memory" not in st.session_state:
     st.session_state.agent_memory = MemorySaver()
 
-# --- 3. HEADER THEME CONTROLLER (Clean Toggle Without ON/OFF Text) ---
-col_space, col_toggle = st.columns([8, 2])
+# --- 3. HEADER CONTROL PANEL (Theme Toggle + Compact History Dropdown Icon) ---
+col_space, col_history, col_toggle = st.columns([6, 2, 2])
+
 with col_toggle:
     is_dark = st.toggle("🌙 Dark Mode", value=(st.session_state.theme == "dark"))
     new_theme = "dark" if is_dark else "light"
@@ -38,18 +42,29 @@ with col_toggle:
         st.session_state.theme = new_theme
         st.rerun()
 
+with col_history:
+    with st.expander("📜 Search History", expanded=False):
+        history_records = get_search_history(st.session_state.session_id, limit=5)
+        if history_records:
+            for query_text, time_stamp in history_records:
+                st.markdown(f"🔍 `{query_text}`\n<small style='color:gray;'>{time_stamp}</small>", unsafe_allow_html=True)
+        else:
+            st.markdown("<small>No queries logged yet.</small>", unsafe_allow_html=True)
+
 # --- 4. DYNAMIC THEME-INDEPENDENT CSS ENGINE ---
 if st.session_state.theme == "dark":
-    BG_STYLE = "radial-gradient(circle at 50% 50%, #1e1b4b 0%, #111827 100%)"
+    # Using a solid, deep dark midnight slate to guarantee full background coverage
+    BG_STYLE = "#0f172a"
     TXT_MAIN = "#ffffff"
     TXT_MUTED = "#94a3b8"
     TXT_ORANGE = "#ff7a33"
-    CARD_1_BG = "#2e2a14"       
+    CARD_1_BG = "#1e1b4b"       
     CARD_2_BG = "#1e293b"       
-    CARD_3_BG = "#1e3a8a"       
+    CARD_3_BG = "#0f172a"       
     CARD_4_BG = "#1f2937"       
     CARD_BORDER = "#374151"
     FORCE_FONT = "#ffffff"
+    INPUT_BG = "#1f2937"
 else:
     BG_STYLE = "radial-gradient(circle at 50% 50%, #fee2e2 0%, #fae8ff 35%, #f5f3ff 65%, #e0f2fe 100%)"
     TXT_MAIN = "#1e293b"
@@ -61,10 +76,17 @@ else:
     CARD_4_BG = "#ffffff"       
     CARD_BORDER = "#e2e8f0"
     FORCE_FONT = "#1e293b"
+    INPUT_BG = "#ffffff"
 
 CSS_SHEET = f"""
 <style>
-    .stApp {{ background: {BG_STYLE} !important; color: {TXT_MAIN} !important; }}
+    /* Absolute uniform background force-lock for root containers to stop split color bands */
+    html, body, .stApp, div[data-testid="stAppViewContainer"], div[data-testid="stApp"], .main, .block-container {{ 
+        background: {BG_STYLE} !important; 
+        background-color: {BG_STYLE} !important;
+        color: {TXT_MAIN} !important; 
+    }}
+    
     .hero-container {{ text-align: center; padding: 1.5rem 0; }}
     .hero-title {{ font-size: 2.8rem; font-weight: 800; color: {TXT_ORANGE} !important; margin-bottom: 0.5rem; }}
     .hero-subtitle {{ font-size: 1.2rem; font-weight: 500; color: {TXT_MUTED} !important; margin-bottom: 0.5rem; }}
@@ -73,10 +95,16 @@ CSS_SHEET = f"""
     .card-title {{ font-size: 1.5rem; font-weight: 700; color: {TXT_MAIN} !important; margin-bottom: 0.8rem; }}
     .card-desc {{ font-size: 0.95rem; color: {TXT_MUTED} !important; line-height: 1.5; }}
     .card-icon {{ font-size: 2.2rem; text-align: right; margin-top: auto; }}
+    
     .stChatMessage, .stChatMessage p, .stChatMessage div, .stChatMessage span,
     div[data-testid="stMarkdownContainer"] p, td, th, table, tr, li, ul, ol {{ color: {FORCE_FONT} !important; }}
     table {{ background-color: {CARD_4_BG} !important; border: 1px solid {CARD_BORDER} !important; width: 100%; }}
     th, td {{ border: 1px solid {CARD_BORDER} !important; padding: 10px; }}
+    
+    /* Input Container styling alignment adjustments */
+    div[data-testid="stChatInput"] {{
+        background-color: {INPUT_BG} !important;
+    }}
 </style>
 """
 st.markdown(CSS_SHEET, unsafe_allow_html=True)
@@ -137,7 +165,6 @@ def search_flights(departure_airport: str, arrival_airport: str, outbound_date: 
         return "Missing SERPAPI_KEY configuration token."
     time.sleep(1.0)
     
-    # Clean parameter fallback for simple conversational queries
     if not outbound_date:
         outbound_date = (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')
     if not return_date:
@@ -283,11 +310,11 @@ def plan_itinerary(destination: str) -> str:
     """Assembles customized day-by-day sightseeing timelines."""
     return f"Complete destination tracking sightseeing activities and historical places for {destination} loaded successfully."
 
-# --- SYSTEM PROMPT (BUILT FOR BULLETED BLOCK TIMELINES & COMPLEX AGENT ROUTING) ---
+# --- SYSTEM PROMPT ---
 SYSTEM_PROMPT = f"""You are a premium, highly adaptive AI Travel Agent. Today's date is {datetime.now().strftime('%Y-%m-%d')}.
 
 STRICT CONTENT OUTPUT LAYOUT RULES:
-1. POINT-WISE STEP BREAKDOWNS ONLY (NO PROSE SUMMARY PARAGRAPHS): When asked to plan a trip, itinerary, or hotel stay, you are explicitly FORBIDDEN from writing general summaries or conversational intro blocks. Output your plan completely in crisp, point-wise day blocks or clear bullet milestones. 
+1. POINT-WISE STEP BREAKDOWNS ONLY (NO PROSE SUMMARY PARAGRAPHS): Output your plan completely in crisp, point-wise day blocks or clear bullet milestones. 
 2. EVERY STEP DETAILED: Every point must outline exact items (e.g. Morning sightseeing spots, explicit ticket pricing metrics, hotel per-night numbers) so it is instantly legible.
 3. FLAWLESS TIMINGS: For flight queries, display the explicit wall-clock times (e.g., 06:15 ➡️ 09:45) directly inline.
 4. AUTOMATIC DATE HANDLING FOR SIMPLE PROMPTS: If a user gives a brief location query without dates, automatically establish a 3-day travel window starting 7 days from today to fuel the search tools behind the scenes without breaking.
@@ -300,6 +327,8 @@ for msg in st.session_state.messages:
 
 # --- 9. AI PROCESSING PIPELINE ENGINE ---
 if user_input := st.chat_input("Ask for trip plans, hotels, or specific restaurant reviews here..."):
+    save_search(st.session_state.session_id, user_input)
+    
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
@@ -327,7 +356,6 @@ if user_input := st.chat_input("Ask for trip plans, hotels, or specific restaura
                 try:
                     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", api_key=clean_key, temperature=0.0)
                     
-                    # Attached the persistent checkpointer memory saver safely to handle multi-turn history natively
                     agent_executor = create_react_agent(
                         llm, 
                         tools=[search_flights, search_hotels, get_weather, search_restaurants_and_reviews, plan_itinerary],
@@ -350,11 +378,9 @@ if user_input := st.chat_input("Ask for trip plans, hotels, or specific restaura
             if agent_output is not None:
                 raw_reply = str(agent_output["messages"][-1].content)
                 
-                # --- AGGRESSIVE PRODUCTION TRUNCATION PASS (Kills all metadata strings permanently) ---
                 clean_reply = raw_reply.split("extras=")[0].split("additional_kwargs=")[0].split("response_metadata=")[0].strip()
                 clean_reply = clean_reply.split("signature=")[0].split("{'type'")[0].strip()
                 
-                # Strip bracket structures cleanly if present at the end of token streams
                 clean_reply = re.sub(r"\[\s*\{\s*['\"]type['\"]:\s*['\"]text['\"].*?\}\s*\]", "", clean_reply, flags=re.DOTALL)
                 clean_reply = clean_reply.rstrip("]}[',: \n\r\"")
                 

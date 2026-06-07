@@ -1,62 +1,130 @@
 import os
+import re
 import streamlit as st
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.prebuilt import create_react_agent
+from langchain_groq import ChatGroq
+from langchain_core.messages import SystemMessage, HumanMessage
 
-try:
-    from tools import search_flights, search_hotels, get_weather, plan_itinerary
-except ImportError:
-    def search_flights(*args, **kwargs): return "Flights engine currently updating."
-    def search_hotels(*args, **kwargs): return "Hotels database currently updating."
-    def get_weather(*args, **kwargs): return "Weather telemetry system offline."
-    def plan_itinerary(*args, **kwargs): return "Itinerary planner system offline."
+from tools import search_flights, search_hotels, get_weather
 
-# --- SYSTEM INSTRUCTION FOR BUDGET REASONING & OUTPUT STRUCTURE ---
-SYSTEM_PROMPT = """You are a premium, highly actionable AI Travel Agent. 
-When a user asks for a trip plan with a specific budget limit (e.g., under 50,000 or 4,500,000):
-1. Never say you cannot factor in the budget. You MUST accept it and construct a plan tailored around it.
-2. Call the required tools (search_flights, search_hotels, get_weather, plan_itinerary) to fetch raw market parameters.
-3. Combine the tool outputs with your internal reasoning to create a clean, comprehensive markdown table titled 'Comprehensive Trip Expense Sheet (INR)'.
-4. Break down costs for Flights, Hotels, Food, local transit, and miscellaneous matching the exact math requested. Ensure the total sits safely under the budget cap.
-5. Provide a clear, scannable day-by-day sightseeing layout and print out the live weather telemetry data directly on screen. Do not output raw JSON, signatures, or error text blocks."""
+SYSTEM_PROMPT = """You are an elite, highly conversational AI Travel Concierge. Today's date is 2026-06-06.
+You operate as a completely open, fully flexible assistant. Accept instructions exactly as phrased by the user.
+Your core task is to parse queries efficiently and execute underlying tooling parameters dynamically:
+- When planning stays or hotels, always deliver up to 10 comprehensive listings explicitly prioritizing the highest customer rating matrices.
+- When generating weather, ensure you provide the multi-day weekly lookahead layout details.
+- When formatting data tables, build beautiful, readable expense matrices. Do not output raw JSON segments or internal tool metadata fields."""
+
+def clean_key_string(raw_key: str) -> str:
+    if not raw_key:
+        return ""
+    return re.sub(r"[\[\]'\"\s]", "", str(raw_key)).strip()
 
 def get_keys_pool():
     if "GEMINI_API_KEYS" not in st.secrets:
         return []
     raw_keys = st.secrets["GEMINI_API_KEYS"]
-    
     if isinstance(raw_keys, str):
-        if "," in raw_keys:
-            return [k.strip() for k in raw_keys.split(",") if k.strip()]
-        return [raw_keys.strip()]
-        
+        return [k.strip() for k in raw_keys.split(",") if k.strip()]
     if isinstance(raw_keys, list):
         return [str(k).strip() for k in raw_keys if str(k).strip()]
-        
     return []
 
-def get_agent():
-    keys_pool = get_keys_pool()
-    if not keys_pool:
-        return None
-        
-    tools_list = [search_flights, search_hotels, get_weather, plan_itinerary]
+def run_travel_agent(user_prompt: str, force_groq=False):
+    """Direct orchestration wrapper loop layer execution."""
+    tools_map = {"search_flights": search_flights, "search_hotels": search_hotels, "get_weather": get_weather}
+    llm = None
     
-    for active_key in keys_pool:
+    if force_groq and "GROQ_API_KEY" in st.secrets:
         try:
-            # Clean up token packaging characters
-            clean_key = active_key.replace("[", "").replace("]", "").replace('"', '').replace("'", "").strip()
-            
-            # Use standard direct initialization without loading the legacy package wrapper
-            llm = ChatGoogleGenerativeAI(
-                model="gemini-2.5-flash",
-                api_key=clean_key,  # Direct parameter initialization pass
-                temperature=0.0,
-                max_retries=3
-            )
-            
-            return create_react_agent(llm, tools=tools_list, state_modifier=SYSTEM_PROMPT)
+            clean_groq_key = clean_key_string(st.secrets["GROQ_API_KEY"])
+            llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=clean_groq_key, temperature=0.0)
         except Exception:
-            continue
+            pass
             
-    return None
+    if llm is None:
+        keys_pool = get_keys_pool()
+        for active_key in keys_pool:
+            try:
+                clean_key = clean_key_string(active_key)
+                llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", api_key=clean_key, temperature=0.0)
+                break
+            except Exception:
+                continue
+
+    if llm is None and "GROQ_API_KEY" in st.secrets:
+        try:
+            clean_groq_key = clean_key_string(st.secrets["GROQ_API_KEY"])
+            llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=clean_groq_key, temperature=0.0)
+        except Exception:
+            return None, "Infrastructure configuration error."
+
+    if llm is None:
+        return None, "Authentication signature keys rejected."
+
+    # 🟢 DIRECT MULTI-TOOL COLLAPSING AGGREGATOR ENGINE LOGIC LOOP
+    # If the user asks for a complete itinerary or full trip plan, we programmatically chain the real tools together.
+    lower_prompt = user_prompt.lower()
+    if "plan" in lower_prompt or "itinerary" in lower_prompt or "trip" in lower_prompt:
+        try:
+            # Step 1: Intelligently extract target location keywords out of the text string
+            words = [w.title() for w in re.findall(r'\b\w+\b', user_prompt) if w.lower() not in [
+                "plan", "a", "trip", "to", "for", "days", "day", "in", "the", "and", "me", "show", "hotels", "weather", "near"
+            ]]
+            target_city = words[0] if words else "Goa"
+            
+            # Step 2: Query real live API data pipelines sequentially
+            weather_data = get_weather.invoke({"target_city": target_city})
+            hotels_data = search_hotels.invoke({"destination_city": target_city, "check_in_date": "", "check_out_date": ""})
+            flights_data = search_flights.invoke({"departure_airport": "HYD", "arrival_airport": "BLR", "outbound_date": "", "return_date": ""})
+            
+            # Step 3: Synthesis matrix compilation pass
+            synthesis_prompt = f"""The user wants an itinerary trip plan based on this query: '{user_prompt}'.
+            Here is the real, verified live metric data fetched from infrastructure pipelines:
+            
+            [LIVE WEATHER FORECAST DATA]
+            {weather_data}
+            
+            [LIVE HOTELS SORTED LISTINGS DATA]
+            {hotels_data}
+            
+            [LIVE FLIGHT CONNECTIONS TIMINGS]
+            {flights_data}
+            
+            Please build a highly comprehensive, beautiful day-by-day travel itinerary. 
+            Calculate an explicit, itemized pricing budget sheet matrix (including total flight fares and accommodation nightly totals accumulated over the trip duration). 
+            Do not make up fake data—rely completely on the provided values."""
+            
+            final_messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=synthesis_prompt)]
+            response = llm.invoke(final_messages)
+            return str(response.content), None
+        except Exception as e:
+            return None, str(e)
+
+    # Standard tool calling router path for single targeted queries
+    tools_list = [search_flights, search_hotels, get_weather]
+    llm_with_tools = llm.bind_tools(tools_list)
+    
+    try:
+        messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_prompt)]
+        response = llm_with_tools.invoke(messages)
+        
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            tool_call = response.tool_calls[0]
+            tool_name = tool_call['name']
+            tool_args = tool_call['args']
+            
+            if tool_name in tools_map:
+                tool_result = tools_map[tool_name].invoke(tool_args)
+                
+                final_messages = [
+                    SystemMessage(content=SYSTEM_PROMPT),
+                    HumanMessage(content=user_prompt),
+                    response,
+                    HumanMessage(content=f"Tool output received: {tool_result}\n\nPlease format this text beautifully according to the concierge guidelines.")
+                ]
+                final_response = llm.invoke(final_messages)
+                return str(final_response.content), None
+                
+        return str(response.content), None
+    except Exception as err:
+        return None, str(err)
